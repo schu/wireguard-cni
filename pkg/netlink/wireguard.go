@@ -1,0 +1,66 @@
+package netlink
+
+import (
+	"github.com/vishvananda/netlink"
+)
+
+type Wireguard struct {
+	netlink.LinkAttrs
+}
+
+func (wg *Wireguard) Attrs() *netlink.LinkAttrs {
+	return &wg.LinkAttrs
+}
+
+func (wg *Wireguard) Type() string {
+	return "wireguard"
+}
+
+// https://git.zx2c4.com/WireGuard/tree/src/uapi/wireguard.h
+
+const (
+	WG_GENL_NAME    = "wireguard"
+	WG_GENL_VERSION = 1
+)
+
+const (
+	WG_CMD_GET_DEVICE = iota
+	WG_CMD_SET_DEVICE
+	WG_CMD_LAST = WG_CMD_SET_DEVICE
+)
+
+const (
+	WGDEVICE_A_UNSPEC = iota
+	WGDEVICE_A_IFINDEX
+	WGDEVICE_A_IFNAME
+	WGDEVICE_A_PRIVATE_KEY
+	WGDEVICE_A_PUBLIC_KEY
+	WGDEVICE_A_FLAGS
+	WGDEVICE_A_LISTEN_PORT
+	WGDEVICE_A_FWMARK
+	WGDEVICE_A_PEERS
+	WGDEVICE_LAST = WGDEVICE_A_PEERS
+)
+
+const (
+	WGPEER_A_UNSPEC = iota
+	WGPEER_A_PUBLIC_KEY
+	WGPEER_A_PRESHARED_KEY
+	WGPEER_A_FLAGS
+	WGPEER_A_ENDPOINT
+	WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL
+	WGPEER_A_LAST_HANDSHAKE_TIME
+	WGPEER_A_RX_BYTES
+	WGPEER_A_TX_BYTES
+	WGPEER_A_ALLOWEDIPS
+	WGPEER_A_PROTOCOL_VERSION
+	WGPEER_LAST = WGPEER_A_PROTOCOL_VERSION
+)
+
+const (
+	WGALLOWEDIP_A_UNSPEC = iota
+	WGALLOWEDIP_A_FAMILY
+	WGALLOWEDIP_A_IPADDR
+	WGALLOWEDIP_A_CIDR_MASK
+	WGALLOWEDIP_LAST = WGALLOWEDIP_A_CIDR_MASK
+)

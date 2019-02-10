@@ -1,3 +1,4 @@
+// Copyright 2019 Michael Schubert <schu@schu.io>
 // Copyright 2017 CNI authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,14 +18,24 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
+	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
+
+	wgnetlink "github.com/schu/wireguard-cni/pkg/netlink"
 )
 
 // PluginConf is whatever you expect your configuration json to be. This is whatever
@@ -47,8 +58,12 @@ type PluginConf struct {
 	PrevResult    *current.Result         `json:"-"`
 
 	// Add plugin-specifc flags here
-	MyAwesomeFlag     bool   `json:"myAwesomeFlag"`
-	AnotherAwesomeArg string `json:"anotherAwesomeArg"`
+	Endpoint            string   `json:"endpoint"`
+	EndpointPublicKey   string   `json:"endpointPublicKey"`
+	AllowedIPs          []string `json:"allowedIPs"`
+	Address             string   `json:"address"`
+	PrivateKey          string   `json:"privateKey"`
+	PersistentKeepalive int      `json:"persistentKeepalive"`
 }
 
 // parseConfig parses the supplied configuration (and prevResult) from stdin.
@@ -78,8 +93,20 @@ func parseConfig(stdin []byte) (*PluginConf, error) {
 	// End previous result parsing
 
 	// Do any validation here
-	if conf.AnotherAwesomeArg == "" {
-		return nil, fmt.Errorf("anotherAwesomeArg must be specified")
+	if conf.Endpoint == "" {
+		return nil, fmt.Errorf("endpoint must be specified")
+	}
+	if conf.EndpointPublicKey == "" {
+		return nil, fmt.Errorf("endpointPublicKey must be specified")
+	}
+	if len(conf.AllowedIPs) == 0 {
+		return nil, fmt.Errorf("allowedIPs must be specified")
+	}
+	if conf.Address == "" {
+		return nil, fmt.Errorf("address must be specified")
+	}
+	if conf.PrivateKey == "" {
+		return nil, fmt.Errorf("privateKey must be specified")
 	}
 
 	return &conf, nil
@@ -96,31 +123,164 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("must be called as chained plugin")
 	}
 
-	// This is some sample code to generate the list of container-side IPs.
-	// We're casting the prevResult to a 0.3.0 response, which can also include
-	// host-side IPs (but doesn't when converted from a 0.2.0 response).
-	containerIPs := make([]net.IP, 0, len(conf.PrevResult.IPs))
-	if conf.CNIVersion != "0.3.0" {
-		for _, ip := range conf.PrevResult.IPs {
-			containerIPs = append(containerIPs, ip.Address.IP)
+	devname := "wg0"
+
+	linkAttrs := netlink.NewLinkAttrs()
+	linkAttrs.Name = devname
+
+	wg := &wgnetlink.Wireguard{
+		LinkAttrs: linkAttrs,
+	}
+
+	if err := netlink.LinkAdd(wg); err != nil {
+		fmt.Errorf("could net add link: %v", err)
+	}
+
+	wgnetlinkFam, err := netlink.GenlFamilyGet(wgnetlink.WG_GENL_NAME)
+	if err != nil {
+		return fmt.Errorf("could not get wireguard netlink fam: %v", err)
+	}
+
+	netlinkRequest := nl.NewNetlinkRequest(int(wgnetlinkFam.ID), unix.NLM_F_ACK)
+
+	nlMsg := &nl.Genlmsg{
+		Command: wgnetlink.WG_CMD_SET_DEVICE,
+		Version: wgnetlink.WG_GENL_VERSION,
+	}
+	netlinkRequest.AddData(nlMsg)
+
+	b := make([]byte, len(devname)+1)
+	copy(b, devname)
+	netlinkRequest.AddData(nl.NewRtAttr(wgnetlink.WGDEVICE_A_IFNAME, b))
+
+	keyBytes, err := base64.StdEncoding.DecodeString(conf.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("could not base64 decode key: %v", err)
+	}
+	netlinkRequest.AddData(nl.NewRtAttr(wgnetlink.WGDEVICE_A_PRIVATE_KEY, keyBytes))
+
+	peers := nl.NewRtAttr(wgnetlink.WGDEVICE_A_PEERS, nil)
+
+	peer := peers.AddRtAttr(unix.NLA_F_NESTED, nil)
+
+	keyBytes, err = base64.StdEncoding.DecodeString(conf.EndpointPublicKey)
+	if err != nil {
+		return fmt.Errorf("could not base64 decode key: %v", err)
+	}
+	peer.AddRtAttr(wgnetlink.WGPEER_A_PUBLIC_KEY, keyBytes)
+
+	// TODO(schu): handle IPv6 addresses
+
+	parts := strings.SplitN(conf.Endpoint, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("endpoint %q not in expected format '<host>:<port>'", conf.Endpoint)
+	}
+
+	addrs, err := net.LookupHost(parts[0])
+	if err != nil {
+		return fmt.Errorf("could not lookup host %q: %v", parts[0], err)
+	}
+
+	ip := net.ParseIP(addrs[0])
+	if ip == nil {
+		return fmt.Errorf("could not parse IP %q: %v", ip, err)
+	}
+
+	portNumber, err := net.LookupPort("", parts[1])
+	if err != nil {
+		return fmt.Errorf("could not lookup port %q: %v", parts[1], err)
+	}
+
+	var portBytes [2]byte
+	binary.LittleEndian.PutUint16(portBytes[:], uint16(portNumber))
+
+	if ip.To4() != nil {
+		sa := unix.RawSockaddrInet4{
+			Family: unix.AF_INET,
+			Port:   binary.BigEndian.Uint16(portBytes[:]),
 		}
+		copy(sa.Addr[:], ip.To4())
+		var buf bytes.Buffer
+		if err := binary.Write(&buf, binary.LittleEndian, sa); err != nil {
+			return fmt.Errorf("could not binary encode sockaddr: %v", err)
+		}
+		peer.AddRtAttr(wgnetlink.WGPEER_A_ENDPOINT, buf.Bytes())
 	} else {
-		for _, ip := range conf.PrevResult.IPs {
-			if ip.Interface == nil {
-				continue
+		panic("IPv6 support not implemented yet")
+	}
+
+	if conf.PersistentKeepalive != 0 {
+		var keepaliveBytes [2]byte
+		binary.LittleEndian.PutUint16(keepaliveBytes[:], uint16(conf.PersistentKeepalive))
+		peer.AddRtAttr(wgnetlink.WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, keepaliveBytes[:])
+	}
+
+	allowedIPs := peer.AddRtAttr(wgnetlink.WGPEER_A_ALLOWEDIPS, nil)
+	for _, allowedIP := range conf.AllowedIPs {
+		allowed := allowedIPs.AddRtAttr(unix.NLA_F_NESTED, nil)
+
+		ip, ipNet, err := net.ParseCIDR(allowedIP)
+		if err != nil {
+			return fmt.Errorf("could not parse CIDR %q: %v", allowedIP, err)
+		}
+
+		if ip.To4() != nil {
+			var familyBytes [2]byte
+			binary.LittleEndian.PutUint16(familyBytes[:], uint16(unix.AF_INET))
+			allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_FAMILY, familyBytes[:])
+
+			buf := bytes.NewBuffer(make([]byte, 0, 4))
+			if err := binary.Write(buf, binary.BigEndian, ip.To4()); err != nil {
+				return fmt.Errorf("could not binary encode '%v': %v", ip, err)
 			}
-			intIdx := *ip.Interface
-			// Every IP is indexed in to the interfaces array, with "-1" standing
-			// for an unknown interface (which we'll assume to be Container-side
-			// Skip all IPs we know belong to an interface with the wrong name.
-			if intIdx >= 0 && intIdx < len(conf.PrevResult.Interfaces) && conf.PrevResult.Interfaces[intIdx].Name != args.IfName {
-				continue
-			}
-			containerIPs = append(containerIPs, ip.Address.IP)
+			allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_IPADDR, buf.Bytes())
+
+			ones, _ := ipNet.Mask.Size()
+			allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_CIDR_MASK, []byte{uint8(ones)})
+		} else {
+			panic("IPv6 support not implemented yet")
 		}
 	}
-	if len(containerIPs) == 0 {
-		return fmt.Errorf("got no container IPs")
+
+	netlinkRequest.AddData(peers)
+
+	_, err = netlinkRequest.Execute(unix.NETLINK_GENERIC, 0)
+	if err != nil {
+		return fmt.Errorf("could not execute netlink request: %v", err)
+	}
+
+	netnsHandle, err := netns.GetFromPath(args.Netns)
+	if err != nil {
+		return fmt.Errorf("could not get container net ns handle: %v", err)
+	}
+
+	if err := netlink.LinkSetNsFd(wg, int(netnsHandle)); err != nil {
+		return fmt.Errorf("could not put link into ns: %v", err)
+	}
+
+	ip, ipNet, err := net.ParseCIDR(conf.Address)
+	if err != nil {
+		return fmt.Errorf("could not parse cidr %q: %v", conf.Address, err)
+	}
+
+	addr := &netlink.Addr{
+		IPNet: &net.IPNet{
+			IP:   ip,
+			Mask: ipNet.Mask,
+		},
+	}
+
+	netlinkNsHandle, err := netlink.NewHandleAt(netnsHandle)
+	if err != nil {
+		return fmt.Errorf("could not get ns netlink handle: %v", err)
+	}
+
+	if err := netlinkNsHandle.AddrAdd(wg, addr); err != nil {
+		return fmt.Errorf("could not add address: %v", err)
+	}
+
+	if err := netlinkNsHandle.LinkSetUp(wg); err != nil {
+		return fmt.Errorf("could not set link up: %v", err)
 	}
 
 	// Pass through the result for the next plugin
