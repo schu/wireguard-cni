@@ -58,12 +58,14 @@ type PluginConf struct {
 	PrevResult    *current.Result         `json:"-"`
 
 	// Add plugin-specifc flags here
-	Endpoint            string   `json:"endpoint"`
-	EndpointPublicKey   string   `json:"endpointPublicKey"`
-	AllowedIPs          []string `json:"allowedIPs"`
-	Address             string   `json:"address"`
-	PrivateKey          string   `json:"privateKey"`
-	PersistentKeepalive int      `json:"persistentKeepalive"`
+	Address    string `json:"address"`
+	PrivateKey string `json:"privateKey"`
+	Peers      []struct {
+		Endpoint            string   `json:"endpoint"`
+		PublicKey           string   `json:"endpointPublicKey"`
+		PersistentKeepalive int      `json:"persistentKeepalive"`
+		AllowedIPs          []string `json:"allowedIPs"`
+	} `json:"peers"`
 }
 
 // parseConfig parses the supplied configuration (and prevResult) from stdin.
@@ -93,14 +95,8 @@ func parseConfig(stdin []byte) (*PluginConf, error) {
 	// End previous result parsing
 
 	// Do any validation here
-	if conf.Endpoint == "" {
-		return nil, fmt.Errorf("endpoint must be specified")
-	}
-	if conf.EndpointPublicKey == "" {
-		return nil, fmt.Errorf("endpointPublicKey must be specified")
-	}
-	if len(conf.AllowedIPs) == 0 {
-		return nil, fmt.Errorf("allowedIPs must be specified")
+	if len(conf.Peers) == 0 {
+		return nil, fmt.Errorf("no peer specified")
 	}
 	if conf.Address == "" {
 		return nil, fmt.Errorf("address must be specified")
@@ -161,84 +157,86 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	peers := nl.NewRtAttr(wgnetlink.WGDEVICE_A_PEERS, nil)
 
-	peer := peers.AddRtAttr(unix.NLA_F_NESTED, nil)
+	for _, peer := range conf.Peers {
+		peerNest := peers.AddRtAttr(unix.NLA_F_NESTED, nil)
 
-	keyBytes, err = base64.StdEncoding.DecodeString(conf.EndpointPublicKey)
-	if err != nil {
-		return fmt.Errorf("could not base64 decode key: %v", err)
-	}
-	peer.AddRtAttr(wgnetlink.WGPEER_A_PUBLIC_KEY, keyBytes)
-
-	// TODO(schu): handle IPv6 addresses
-
-	parts := strings.SplitN(conf.Endpoint, ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("endpoint %q not in expected format '<host>:<port>'", conf.Endpoint)
-	}
-
-	addrs, err := net.LookupHost(parts[0])
-	if err != nil {
-		return fmt.Errorf("could not lookup host %q: %v", parts[0], err)
-	}
-
-	ip := net.ParseIP(addrs[0])
-	if ip == nil {
-		return fmt.Errorf("could not parse IP %q: %v", ip, err)
-	}
-
-	portNumber, err := net.LookupPort("", parts[1])
-	if err != nil {
-		return fmt.Errorf("could not lookup port %q: %v", parts[1], err)
-	}
-
-	var portBytes [2]byte
-	binary.LittleEndian.PutUint16(portBytes[:], uint16(portNumber))
-
-	if ip.To4() != nil {
-		sa := unix.RawSockaddrInet4{
-			Family: unix.AF_INET,
-			Port:   binary.BigEndian.Uint16(portBytes[:]),
-		}
-		copy(sa.Addr[:], ip.To4())
-		var buf bytes.Buffer
-		if err := binary.Write(&buf, binary.LittleEndian, sa); err != nil {
-			return fmt.Errorf("could not binary encode sockaddr: %v", err)
-		}
-		peer.AddRtAttr(wgnetlink.WGPEER_A_ENDPOINT, buf.Bytes())
-	} else {
-		panic("IPv6 support not implemented yet")
-	}
-
-	if conf.PersistentKeepalive != 0 {
-		var keepaliveBytes [2]byte
-		binary.LittleEndian.PutUint16(keepaliveBytes[:], uint16(conf.PersistentKeepalive))
-		peer.AddRtAttr(wgnetlink.WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, keepaliveBytes[:])
-	}
-
-	allowedIPs := peer.AddRtAttr(wgnetlink.WGPEER_A_ALLOWEDIPS, nil)
-	for _, allowedIP := range conf.AllowedIPs {
-		allowed := allowedIPs.AddRtAttr(unix.NLA_F_NESTED, nil)
-
-		ip, ipNet, err := net.ParseCIDR(allowedIP)
+		keyBytes, err = base64.StdEncoding.DecodeString(peer.PublicKey)
 		if err != nil {
-			return fmt.Errorf("could not parse CIDR %q: %v", allowedIP, err)
+			return fmt.Errorf("could not base64 decode key: %v", err)
 		}
+		peerNest.AddRtAttr(wgnetlink.WGPEER_A_PUBLIC_KEY, keyBytes)
+
+		// TODO(schu): handle IPv6 addresses
+
+		parts := strings.SplitN(peer.Endpoint, ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("endpoint %q not in expected format '<host>:<port>'", peer.Endpoint)
+		}
+
+		addrs, err := net.LookupHost(parts[0])
+		if err != nil {
+			return fmt.Errorf("could not lookup host %q: %v", parts[0], err)
+		}
+
+		ip := net.ParseIP(addrs[0])
+		if ip == nil {
+			return fmt.Errorf("could not parse IP %q: %v", ip, err)
+		}
+
+		portNumber, err := net.LookupPort("", parts[1])
+		if err != nil {
+			return fmt.Errorf("could not lookup port %q: %v", parts[1], err)
+		}
+
+		var portBytes [2]byte
+		binary.LittleEndian.PutUint16(portBytes[:], uint16(portNumber))
 
 		if ip.To4() != nil {
-			var familyBytes [2]byte
-			binary.LittleEndian.PutUint16(familyBytes[:], uint16(unix.AF_INET))
-			allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_FAMILY, familyBytes[:])
-
-			buf := bytes.NewBuffer(make([]byte, 0, 4))
-			if err := binary.Write(buf, binary.BigEndian, ip.To4()); err != nil {
-				return fmt.Errorf("could not binary encode '%v': %v", ip, err)
+			sa := unix.RawSockaddrInet4{
+				Family: unix.AF_INET,
+				Port:   binary.BigEndian.Uint16(portBytes[:]),
 			}
-			allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_IPADDR, buf.Bytes())
-
-			ones, _ := ipNet.Mask.Size()
-			allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_CIDR_MASK, []byte{uint8(ones)})
+			copy(sa.Addr[:], ip.To4())
+			var buf bytes.Buffer
+			if err := binary.Write(&buf, binary.LittleEndian, sa); err != nil {
+				return fmt.Errorf("could not binary encode sockaddr: %v", err)
+			}
+			peerNest.AddRtAttr(wgnetlink.WGPEER_A_ENDPOINT, buf.Bytes())
 		} else {
 			panic("IPv6 support not implemented yet")
+		}
+
+		if peer.PersistentKeepalive != 0 {
+			var keepaliveBytes [2]byte
+			binary.LittleEndian.PutUint16(keepaliveBytes[:], uint16(peer.PersistentKeepalive))
+			peerNest.AddRtAttr(wgnetlink.WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, keepaliveBytes[:])
+		}
+
+		allowedIPs := peerNest.AddRtAttr(wgnetlink.WGPEER_A_ALLOWEDIPS, nil)
+		for _, allowedIP := range peer.AllowedIPs {
+			allowed := allowedIPs.AddRtAttr(unix.NLA_F_NESTED, nil)
+
+			ip, ipNet, err := net.ParseCIDR(allowedIP)
+			if err != nil {
+				return fmt.Errorf("could not parse CIDR %q: %v", allowedIP, err)
+			}
+
+			if ip.To4() != nil {
+				var familyBytes [2]byte
+				binary.LittleEndian.PutUint16(familyBytes[:], uint16(unix.AF_INET))
+				allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_FAMILY, familyBytes[:])
+
+				buf := bytes.NewBuffer(make([]byte, 0, 4))
+				if err := binary.Write(buf, binary.BigEndian, ip.To4()); err != nil {
+					return fmt.Errorf("could not binary encode '%v': %v", ip, err)
+				}
+				allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_IPADDR, buf.Bytes())
+
+				ones, _ := ipNet.Mask.Size()
+				allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_CIDR_MASK, []byte{uint8(ones)})
+			} else {
+				panic("IPv6 support not implemented yet")
+			}
 		}
 	}
 

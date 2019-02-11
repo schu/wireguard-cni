@@ -6,9 +6,8 @@ wireguard-cni is a CNI plugin for [WireGuard](https://www.wireguard.com/).
 
 ## Usage
 
-The current prototype can only be used as a chained CNI plugin, only
-with a single peer and the configuration must be provided through [CNI
-network configuration](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration)
+The current prototype can be used as a chained CNI plugin, the
+configuration must be provided through [CNI network configuration](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration)
 for the moment.
 
 ### Example: chained plugin with flannel
@@ -52,12 +51,18 @@ data:
         },
         {
           "type": "wg-cni",
-          "endpoint": "1.2.3.4:51820",
-          "endpointPublicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
-          "allowedIPs": ["10.13.13.0/24"],
           "address": "10.13.13.210/24",
           "privateKey": "AAev16ZVYhmCQliIYKXMje1zObRp6TmET0KiUx7MJXc=",
-          "persistentKeepalive": 25
+          "peers": [
+            {
+              "endpoint": "1.2.3.4:51820",
+              "endpointPublicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
+              "allowedIPs": [
+                "10.13.13.0/24"
+              ],
+              "persistentKeepalive": 25
+            }
+          ]
         }
       ]
     }
