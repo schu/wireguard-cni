@@ -119,6 +119,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("must be called as chained plugin")
 	}
 
+	netnsHandle, err := netns.GetFromPath(args.Netns)
+	if err != nil {
+		return fmt.Errorf("could not get container net ns handle: %v", err)
+	}
+
+	netnsNetlinkHandle, err := netlink.NewHandleAt(netnsHandle)
+	if err != nil {
+		return fmt.Errorf("could not get container net ns netlink handle: %v", err)
+	}
+
 	devname := "wg0"
 
 	linkAttrs := netlink.NewLinkAttrs()
@@ -128,7 +138,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		LinkAttrs: linkAttrs,
 	}
 
-	if err := netlink.LinkAdd(wg); err != nil {
+	if err := netnsNetlinkHandle.LinkAdd(wg); err != nil {
 		fmt.Errorf("could net add link: %v", err)
 	}
 
@@ -137,7 +147,20 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("could not get wireguard netlink fam: %v", err)
 	}
 
+	netlinkSocket, err := nl.GetNetlinkSocketAt(netnsHandle, netns.None(), unix.NETLINK_GENERIC)
+	if err != nil {
+		return fmt.Errorf("could net get generic netlink socket for container ns: %v", err)
+	}
+	socketHandle := &nl.SocketHandle{
+		Seq:    1, // we are the only user of this socket
+		Socket: netlinkSocket,
+	}
+	defer socketHandle.Close()
+
 	netlinkRequest := nl.NewNetlinkRequest(int(wgnetlinkFam.ID), unix.NLM_F_ACK)
+	netlinkRequest.Sockets = map[int]*nl.SocketHandle{
+		unix.NETLINK_GENERIC: socketHandle,
+	}
 
 	nlMsg := &nl.Genlmsg{
 		Command: wgnetlink.WG_CMD_SET_DEVICE,
@@ -247,15 +270,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("could not execute netlink request: %v", err)
 	}
 
-	netnsHandle, err := netns.GetFromPath(args.Netns)
-	if err != nil {
-		return fmt.Errorf("could not get container net ns handle: %v", err)
-	}
-
-	if err := netlink.LinkSetNsFd(wg, int(netnsHandle)); err != nil {
-		return fmt.Errorf("could not put link into ns: %v", err)
-	}
-
 	ip, ipNet, err := net.ParseCIDR(conf.Address)
 	if err != nil {
 		return fmt.Errorf("could not parse cidr %q: %v", conf.Address, err)
@@ -268,16 +282,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 		},
 	}
 
-	netlinkNsHandle, err := netlink.NewHandleAt(netnsHandle)
-	if err != nil {
-		return fmt.Errorf("could not get ns netlink handle: %v", err)
-	}
-
-	if err := netlinkNsHandle.AddrAdd(wg, addr); err != nil {
+	if err := netnsNetlinkHandle.AddrAdd(wg, addr); err != nil {
 		return fmt.Errorf("could not add address: %v", err)
 	}
 
-	if err := netlinkNsHandle.LinkSetUp(wg); err != nil {
+	if err := netnsNetlinkHandle.LinkSetUp(wg); err != nil {
 		return fmt.Errorf("could not set link up: %v", err)
 	}
 
