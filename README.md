@@ -75,7 +75,9 @@ data:
     }
 ```
 
-## Roadmap
+## Roadmap / Todo
 
+* Provide a container and manifest to install the wg-cni plugin binary
+  on all nodes in a cluster
 * Allow dynamic configuration through Kubernetes resources
 * Allow wireguard-cni to be used in standalone and chained mode
