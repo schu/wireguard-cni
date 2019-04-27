@@ -20,7 +20,27 @@ Deploy new flannel pods for the configuration to be written.
 kubectl -n kube-system edit configmap kube-flannel-cfg
 ```
 
-Example configmap:
+Example wg-cni config section:
+
+```
+{
+  "type": "wg-cni",
+  "address": "10.13.13.210/24",
+  "privateKey": "AAev16ZVYhmCQliIYKXMje1zObRp6TmET0KiUx7MJXc=",
+  "peers": [
+    {
+      "endpoint": "1.2.3.4:51820",
+      "endpointPublicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
+      "allowedIPs": [
+        "10.13.13.0/24"
+      ],
+      "persistentKeepalive": 25
+    }
+  ]
+}
+```
+
+Example kube-flannel-cfg configmap:
 
 ```
 kind: ConfigMap
