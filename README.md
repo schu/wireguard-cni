@@ -4,21 +4,28 @@ Status: alpha, work in progress
 
 wireguard-cni is a CNI plugin for [WireGuard](https://www.wireguard.com/).
 
+## Installation
+
+Configure the apiserver endpoint that `wg-cni` should use. Example:
+
+```
+kubectl -n kube-system create configmap wg-cni-env --from-literal=KUBERNETES_APISERVER_ENDPOINT=https://10.76.188.104:6443
+```
+
+Install wg-cni and its kubeconfig file on all nodes in the cluster:
+
+```
+kubectl apply -f manifests/wg-cni.yml
+```
+
 ## Usage
 
-The current prototype can be used as a chained CNI plugin, the
-configuration must be provided through [CNI network configuration](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration)
-for the moment.
+The current prototype can be used as a chained CNI plugin, see the examples
+below.
 
-### Example: chained plugin with flannel
-
-Edit the `kube-flannel-cfg` configmap and add `wg-cni` as a chained
-plugin. Make sure `wg-cni` is available in the CNI path, `/opt/cni/bin`.
-Deploy new flannel pods for the configuration to be written.
-
-```
-kubectl -n kube-system edit configmap kube-flannel-cfg
-```
+The WireGuard interface configuration must be provided through [CNI network configuration](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration)
+for the moment. This will change soon and configuration will be stored
+with the Kubernetes apiserver.
 
 Example wg-cni config section:
 
@@ -38,6 +45,15 @@ Example wg-cni config section:
     }
   ]
 }
+```
+
+### Example: chained plugin with flannel
+
+Edit the `kube-flannel-cfg` configmap and add `wg-cni` as a chained
+plugin. Deploy new flannel pods for the configuration to be written.
+
+```
+kubectl -n kube-system edit configmap kube-flannel-cfg
 ```
 
 Example kube-flannel-cfg configmap:
