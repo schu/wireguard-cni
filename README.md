@@ -100,4 +100,7 @@ data:
 * Provide a container and manifest to install the wg-cni plugin binary
   on all nodes in a cluster
 * Allow dynamic configuration through Kubernetes resources
-* Allow wireguard-cni to be used in standalone and chained mode
+* Switch to https://github.com/mdlayher/wireguardctrl for netlink
+  (likely becoming the ["official"](https://news.ycombinator.com/item?id=19782475)
+  WireGuard netlink package for Go)
+* Allow wireguard-cni to be used in standalone and chained mode?
