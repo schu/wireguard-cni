@@ -1,0 +1,47 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -x
+
+readonly binary_install_path="/host/opt/cni/bin/"
+
+if [[ -w "${binary_install_path}" ]]; then
+  cp /opt/cni/bin/wg-cni "${binary_install_path}/wg-cni"
+fi
+
+readonly kubeconfig_install_path="/host/etc/kubernetes/wg-cni.kubeconfig"
+readonly ca_cert="$(base64 </var/run/secrets/kubernetes.io/serviceaccount/ca.crt | tr -d '\r\n')"
+readonly namespace="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+readonly token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+
+if [[ -z "${KUBERNETES_APISERVER_ENDPOINT}" ]]; then
+  echo "environment variable KUBERNETES_APISERVER_ENDPOINT not set - aborting" >&2
+  exit 1
+fi
+
+cat >"${kubeconfig_install_path}" <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+- name: default-cluster
+  cluster:
+    certificate-authority-data: ${ca_cert}
+    server: ${KUBERNETES_APISERVER_ENDPOINT}
+contexts:
+- name: default-context
+  context:
+    cluster: default-cluster
+    namespace: ${namespace}
+    user: default-user
+current-context: default-context
+users:
+- name: default-user
+  user:
+    token: ${token}
+EOF
+
+chmod 0600 "${kubeconfig_install_path}"
+
+while : ; do sleep 3600; done
