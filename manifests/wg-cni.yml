@@ -45,7 +45,7 @@ spec:
         - name: host-etc-kubernetes
           mountPath: /host/etc/kubernetes/
       tolerations:
-      # TODO: maybe not need to run on controller nodes at all
+      # TODO: maybe no need to run on controller nodes at all
       - key: node-role.kubernetes.io/master
         operator: Exists
         effect: NoSchedule
