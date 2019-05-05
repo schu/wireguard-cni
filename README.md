@@ -51,6 +51,10 @@ Example wg-cni config section:
 
 Edit the `kube-flannel-cfg` configmap and add `wg-cni` as a chained
 plugin. Deploy new flannel pods for the configuration to be written.
+To do that, you can delete the currently running flannel pods with
+`kubectl -n kube-system delete pods -l app=flannel`.
+
+Edit the configmap:
 
 ```
 kubectl -n kube-system edit configmap kube-flannel-cfg
