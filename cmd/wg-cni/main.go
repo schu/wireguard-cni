@@ -18,22 +18,19 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
+	"time"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netlink/nl"
 	"github.com/vishvananda/netns"
-	"golang.org/x/sys/unix"
+	"golang.zx2c4.com/wireguard/wgctrl"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	wgnetlink "github.com/schu/wireguard-cni/pkg/netlink"
 )
@@ -62,8 +59,8 @@ type PluginConf struct {
 	PrivateKey string `json:"privateKey"`
 	Peers      []struct {
 		Endpoint            string   `json:"endpoint"`
-		PublicKey           string   `json:"endpointPublicKey"`
-		PersistentKeepalive int      `json:"persistentKeepalive"`
+		PublicKey           string   `json:"publicKey"`
+		PersistentKeepalive string   `json:"persistentKeepalive"`
 		AllowedIPs          []string `json:"allowedIPs"`
 	} `json:"peers"`
 }
@@ -119,155 +116,61 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("must be called as chained plugin")
 	}
 
+	privateKey, err := wgtypes.ParseKey(conf.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("could not parse private key: %v", err)
+	}
+
+	var peers []wgtypes.PeerConfig
+	for _, peerConf := range conf.Peers {
+		var peer wgtypes.PeerConfig
+
+		peer.PublicKey, err = wgtypes.ParseKey(peerConf.PublicKey)
+		if err != nil {
+			return fmt.Errorf("could not parse public key: %v", err)
+		}
+
+		keepaliveInterval, err := time.ParseDuration(peerConf.PersistentKeepalive)
+		if err != nil {
+			return fmt.Errorf("could not parse keepalive duration string %q: %v", peerConf.PersistentKeepalive, err)
+		}
+		peer.PersistentKeepaliveInterval = &keepaliveInterval
+
+		peer.Endpoint, err = net.ResolveUDPAddr("udp", peerConf.Endpoint)
+		if err != nil {
+			return fmt.Errorf("could not parse endpoint %q: %v", peerConf.Endpoint, err)
+		}
+
+		for _, allowedIP := range peerConf.AllowedIPs {
+			_, ipnet, err := net.ParseCIDR(allowedIP)
+			if err != nil {
+				return fmt.Errorf("could not parse CIDR %q: %v", allowedIP, err)
+			}
+
+			peer.AllowedIPs = append(peer.AllowedIPs, *ipnet)
+		}
+
+		peers = append(peers, peer)
+	}
+
+	wgConfig := wgtypes.Config{
+		PrivateKey: &privateKey,
+		Peers:      peers,
+	}
+
 	netnsHandle, err := netns.GetFromPath(args.Netns)
 	if err != nil {
 		return fmt.Errorf("could not get container net ns handle: %v", err)
 	}
 
-	netnsNetlinkHandle, err := netlink.NewHandleAt(netnsHandle)
-	if err != nil {
-		return fmt.Errorf("could not get container net ns netlink handle: %v", err)
-	}
-
-	devname := "wg0"
-
 	linkAttrs := netlink.NewLinkAttrs()
-	linkAttrs.Name = devname
+	linkAttrs.Name = "wg0"
 
-	wg := &wgnetlink.Wireguard{
+	wgLink := &wgnetlink.Wireguard{
 		LinkAttrs: linkAttrs,
 	}
-
-	if err := netnsNetlinkHandle.LinkAdd(wg); err != nil {
-		fmt.Errorf("could net add link: %v", err)
-	}
-
-	wgnetlinkFam, err := netlink.GenlFamilyGet(wgnetlink.WG_GENL_NAME)
-	if err != nil {
-		return fmt.Errorf("could not get wireguard netlink fam: %v", err)
-	}
-
-	netlinkSocket, err := nl.GetNetlinkSocketAt(netnsHandle, netns.None(), unix.NETLINK_GENERIC)
-	if err != nil {
-		return fmt.Errorf("could net get generic netlink socket for container ns: %v", err)
-	}
-	socketHandle := &nl.SocketHandle{
-		Seq:    1, // we are the only user of this socket
-		Socket: netlinkSocket,
-	}
-	defer socketHandle.Close()
-
-	netlinkRequest := nl.NewNetlinkRequest(int(wgnetlinkFam.ID), unix.NLM_F_ACK)
-	netlinkRequest.Sockets = map[int]*nl.SocketHandle{
-		unix.NETLINK_GENERIC: socketHandle,
-	}
-
-	nlMsg := &nl.Genlmsg{
-		Command: wgnetlink.WG_CMD_SET_DEVICE,
-		Version: wgnetlink.WG_GENL_VERSION,
-	}
-	netlinkRequest.AddData(nlMsg)
-
-	b := make([]byte, len(devname)+1)
-	copy(b, devname)
-	netlinkRequest.AddData(nl.NewRtAttr(wgnetlink.WGDEVICE_A_IFNAME, b))
-
-	keyBytes, err := base64.StdEncoding.DecodeString(conf.PrivateKey)
-	if err != nil {
-		return fmt.Errorf("could not base64 decode key: %v", err)
-	}
-	netlinkRequest.AddData(nl.NewRtAttr(wgnetlink.WGDEVICE_A_PRIVATE_KEY, keyBytes))
-
-	peers := nl.NewRtAttr(wgnetlink.WGDEVICE_A_PEERS, nil)
-
-	for _, peer := range conf.Peers {
-		peerNest := peers.AddRtAttr(unix.NLA_F_NESTED, nil)
-
-		keyBytes, err = base64.StdEncoding.DecodeString(peer.PublicKey)
-		if err != nil {
-			return fmt.Errorf("could not base64 decode key: %v", err)
-		}
-		peerNest.AddRtAttr(wgnetlink.WGPEER_A_PUBLIC_KEY, keyBytes)
-
-		// TODO(schu): handle IPv6 addresses
-
-		parts := strings.SplitN(peer.Endpoint, ":", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("endpoint %q not in expected format '<host>:<port>'", peer.Endpoint)
-		}
-
-		addrs, err := net.LookupHost(parts[0])
-		if err != nil {
-			return fmt.Errorf("could not lookup host %q: %v", parts[0], err)
-		}
-
-		ip := net.ParseIP(addrs[0])
-		if ip == nil {
-			return fmt.Errorf("could not parse IP %q: %v", ip, err)
-		}
-
-		portNumber, err := net.LookupPort("", parts[1])
-		if err != nil {
-			return fmt.Errorf("could not lookup port %q: %v", parts[1], err)
-		}
-
-		var portBytes [2]byte
-		binary.LittleEndian.PutUint16(portBytes[:], uint16(portNumber))
-
-		if ip.To4() != nil {
-			sa := unix.RawSockaddrInet4{
-				Family: unix.AF_INET,
-				Port:   binary.BigEndian.Uint16(portBytes[:]),
-			}
-			copy(sa.Addr[:], ip.To4())
-			var buf bytes.Buffer
-			if err := binary.Write(&buf, binary.LittleEndian, sa); err != nil {
-				return fmt.Errorf("could not binary encode sockaddr: %v", err)
-			}
-			peerNest.AddRtAttr(wgnetlink.WGPEER_A_ENDPOINT, buf.Bytes())
-		} else {
-			panic("IPv6 support not implemented yet")
-		}
-
-		if peer.PersistentKeepalive != 0 {
-			var keepaliveBytes [2]byte
-			binary.LittleEndian.PutUint16(keepaliveBytes[:], uint16(peer.PersistentKeepalive))
-			peerNest.AddRtAttr(wgnetlink.WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, keepaliveBytes[:])
-		}
-
-		allowedIPs := peerNest.AddRtAttr(wgnetlink.WGPEER_A_ALLOWEDIPS, nil)
-		for _, allowedIP := range peer.AllowedIPs {
-			allowed := allowedIPs.AddRtAttr(unix.NLA_F_NESTED, nil)
-
-			ip, ipNet, err := net.ParseCIDR(allowedIP)
-			if err != nil {
-				return fmt.Errorf("could not parse CIDR %q: %v", allowedIP, err)
-			}
-
-			if ip.To4() != nil {
-				var familyBytes [2]byte
-				binary.LittleEndian.PutUint16(familyBytes[:], uint16(unix.AF_INET))
-				allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_FAMILY, familyBytes[:])
-
-				buf := bytes.NewBuffer(make([]byte, 0, 4))
-				if err := binary.Write(buf, binary.BigEndian, ip.To4()); err != nil {
-					return fmt.Errorf("could not binary encode '%v': %v", ip, err)
-				}
-				allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_IPADDR, buf.Bytes())
-
-				ones, _ := ipNet.Mask.Size()
-				allowed.AddRtAttr(wgnetlink.WGALLOWEDIP_A_CIDR_MASK, []byte{uint8(ones)})
-			} else {
-				panic("IPv6 support not implemented yet")
-			}
-		}
-	}
-
-	netlinkRequest.AddData(peers)
-
-	_, err = netlinkRequest.Execute(unix.NETLINK_GENERIC, 0)
-	if err != nil {
-		return fmt.Errorf("could not execute netlink request: %v", err)
+	if err := netlink.LinkAdd(wgLink); err != nil {
+		return fmt.Errorf("could not create wg network interface: %v", err)
 	}
 
 	ip, ipNet, err := net.ParseCIDR(conf.Address)
@@ -282,11 +185,30 @@ func cmdAdd(args *skel.CmdArgs) error {
 		},
 	}
 
-	if err := netnsNetlinkHandle.AddrAdd(wg, addr); err != nil {
+	if err := netlink.AddrAdd(wgLink, addr); err != nil {
 		return fmt.Errorf("could not add address: %v", err)
 	}
 
-	if err := netnsNetlinkHandle.LinkSetUp(wg); err != nil {
+	wgClient, err := wgctrl.New()
+	if err != nil {
+		return fmt.Errorf("could not get wgctrl client: %v", err)
+	}
+	defer wgClient.Close()
+
+	if err := wgClient.ConfigureDevice("wg0", wgConfig); err != nil {
+		return fmt.Errorf("could not configure device wg0: %v", err)
+	}
+
+	if err := netlink.LinkSetNsFd(wgLink, (int)(netnsHandle)); err != nil {
+		return fmt.Errorf("could not move network interface into container's net namespace: %v", err)
+	}
+
+	netnsNetlinkHandle, err := netlink.NewHandleAt(netnsHandle)
+	if err != nil {
+		return fmt.Errorf("could not get container net ns netlink handle: %v", err)
+	}
+
+	if err := netnsNetlinkHandle.LinkSetUp(wgLink); err != nil {
 		return fmt.Errorf("could not set link up: %v", err)
 	}
 

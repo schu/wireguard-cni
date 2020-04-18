@@ -37,11 +37,11 @@ Example wg-cni config section:
   "peers": [
     {
       "endpoint": "1.2.3.4:51820",
-      "endpointPublicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
+      "publicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
       "allowedIPs": [
         "10.13.13.0/24"
       ],
-      "persistentKeepalive": 25
+      "persistentKeepalive": "25s"
     }
   ]
 }
@@ -96,11 +96,11 @@ data:
           "peers": [
             {
               "endpoint": "1.2.3.4:51820",
-              "endpointPublicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
+              "publicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
               "allowedIPs": [
                 "10.13.13.0/24"
               ],
-              "persistentKeepalive": 25
+              "persistentKeepalive": "25s"
             }
           ]
         }
@@ -117,10 +117,8 @@ data:
 
 ## Roadmap / Todo
 
-* Provide a container and manifest to install the wg-cni plugin binary
+* [x] Switch to https://github.com/mdlayher/wireguardctrl for netlink
+* [ ] Provide a container and manifest to install the wg-cni plugin binary
   on all nodes in a cluster
-* Allow dynamic configuration through Kubernetes resources
-* Switch to https://github.com/mdlayher/wireguardctrl for netlink
-  (likely becoming the ["official"](https://news.ycombinator.com/item?id=19782475)
-  WireGuard netlink package for Go)
-* Allow wireguard-cni to be used in standalone and chained mode?
+* [ ] Allow dynamic configuration through Kubernetes resources
+* [ ] Allow wireguard-cni to be used in standalone and chained mode?
