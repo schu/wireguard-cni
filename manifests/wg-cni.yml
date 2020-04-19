@@ -38,7 +38,7 @@ subjects:
 
 ---
 
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: wg-cni
@@ -46,6 +46,9 @@ metadata:
   labels:
     k8s-app: wg-cni
 spec:
+  selector:
+    matchLabels:
+      k8s-app: wg-cni
   template:
     metadata:
       labels:
