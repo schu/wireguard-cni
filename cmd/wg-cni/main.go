@@ -34,6 +34,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	wgnetlink "github.com/schu/wireguard-cni/pkg/netlink"
+	"github.com/schu/wireguard-cni/pkg/util"
 )
 
 // PluginConf is whatever you expect your configuration json to be. This is whatever
@@ -164,8 +165,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("could not get container net ns handle: %v", err)
 	}
 
+	linkName := "wg" + util.RandString(6)
+
 	linkAttrs := netlink.NewLinkAttrs()
-	linkAttrs.Name = "wg0"
+	linkAttrs.Name = linkName
 
 	wgLink := &wgnetlink.Wireguard{
 		LinkAttrs: linkAttrs,
@@ -192,8 +195,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	defer wgClient.Close()
 
-	if err := wgClient.ConfigureDevice("wg0", wgConfig); err != nil {
-		return fmt.Errorf("could not configure device wg0: %v", err)
+	if err := wgClient.ConfigureDevice(linkName, wgConfig); err != nil {
+		return fmt.Errorf("could not configure wireguard link: %v", err)
 	}
 
 	if err := netlink.LinkSetNsFd(wgLink, (int)(netnsHandle)); err != nil {
