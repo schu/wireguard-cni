@@ -29,6 +29,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
@@ -210,6 +211,25 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	if err := netnsNetlinkHandle.LinkSetUp(wgLink); err != nil {
 		return fmt.Errorf("could not set link up: %v", err)
+	}
+
+	for _, peer := range peers {
+		for _, allowedIP := range peer.AllowedIPs {
+			// For the source IP CIDR there is a route
+			// already from `ip addr add ...` above.
+			if allowedIP.Contains(sourceIP) {
+				continue
+			}
+
+			route := &netlink.Route{
+				LinkIndex: wgLink.Attrs().Index,
+				Dst:       &allowedIP,
+				Scope:     unix.RT_SCOPE_LINK,
+			}
+			if err := netnsNetlinkHandle.RouteAdd(route); err != nil {
+				return fmt.Errorf("could not add route for %v: %v", route, err)
+			}
+		}
 	}
 
 	// Pass through the result for the next plugin
