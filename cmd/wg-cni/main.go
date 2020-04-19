@@ -20,6 +20,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"time"
 
@@ -33,9 +34,14 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/schu/wireguard-cni/pkg/k8sutil"
 	wgnetlink "github.com/schu/wireguard-cni/pkg/netlink"
 	"github.com/schu/wireguard-cni/pkg/util"
 )
+
+func init() {
+	log.SetPrefix("[wg-cni] ")
+}
 
 // PluginConf is whatever you expect your configuration json to be. This is whatever
 // is passed in on stdin. Your plugin may wish to expose its functionality via
@@ -117,6 +123,14 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if conf.PrevResult == nil {
 		return fmt.Errorf("must be called as chained plugin")
 	}
+
+	clientset, err := k8sutil.NewClientset("/etc/kubernetes/wg-cni.kubeconfig")
+	if err != nil {
+		return fmt.Errorf("could not get k8s clientset: %v", err)
+	}
+
+	// TODO
+	_ = clientset
 
 	privateKey, err := wgtypes.ParseKey(conf.PrivateKey)
 	if err != nil {
