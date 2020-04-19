@@ -173,20 +173,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("could not create wg network interface: %v", err)
 	}
 
-	ip, ipNet, err := net.ParseCIDR(conf.Address)
+	sourceIP, sourceIPNet, err := net.ParseCIDR(conf.Address)
 	if err != nil {
 		return fmt.Errorf("could not parse cidr %q: %v", conf.Address, err)
 	}
 
 	addr := &netlink.Addr{
 		IPNet: &net.IPNet{
-			IP:   ip,
-			Mask: ipNet.Mask,
+			IP:   sourceIP,
+			Mask: sourceIPNet.Mask,
 		},
-	}
-
-	if err := netlink.AddrAdd(wgLink, addr); err != nil {
-		return fmt.Errorf("could not add address: %v", err)
 	}
 
 	wgClient, err := wgctrl.New()
@@ -206,6 +202,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 	netnsNetlinkHandle, err := netlink.NewHandleAt(netnsHandle)
 	if err != nil {
 		return fmt.Errorf("could not get container net ns netlink handle: %v", err)
+	}
+
+	if err := netnsNetlinkHandle.AddrAdd(wgLink, addr); err != nil {
+		return fmt.Errorf("could not add address: %v", err)
 	}
 
 	if err := netnsNetlinkHandle.LinkSetUp(wgLink); err != nil {
