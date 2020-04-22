@@ -1,15 +1,16 @@
 # wireguard-cni
 
-Status: alpha, work in progress
+Status: alpha, use with caution
 
 wireguard-cni is a CNI plugin for [WireGuard](https://www.wireguard.com/).
 
 ## Installation
 
-Configure the apiserver endpoint that `wg-cni` should use. Example:
+Configure the apiserver endpoint that `wg-cni` should use to query
+configuration:
 
 ```
-kubectl -n kube-system create configmap wg-cni-env --from-literal=KUBERNETES_APISERVER_ENDPOINT=https://10.76.188.104:6443
+kubectl -n kube-system create configmap wg-cni-env --from-literal=KUBERNETES_APISERVER_ENDPOINT=https://<IP_ADDRESS>:<PORT>
 ```
 
 Install wg-cni and its kubeconfig file on all nodes in the cluster:
@@ -18,36 +19,29 @@ Install wg-cni and its kubeconfig file on all nodes in the cluster:
 kubectl apply -f manifests/wg-cni.yml
 ```
 
-## Usage
+wg-cni is set up as a chained CNI plugin. This means you have
+to configure wg-cni as an additional CNI plugin in your configuration.
 
-The current prototype can be used as a chained CNI plugin, see the examples
-below.
-
-The WireGuard interface configuration must be provided through [CNI network configuration](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration)
-for the moment. This will change soon and configuration will be stored
-with the Kubernetes apiserver.
-
-Example wg-cni config section:
+To do this, the following section has to be added to the CNI config of
+your cluster:
 
 ```
 {
   "type": "wg-cni",
-  "address": "10.13.13.210/24",
-  "privateKey": "AAev16ZVYhmCQliIYKXMje1zObRp6TmET0KiUx7MJXc=",
-  "peers": [
-    {
-      "endpoint": "1.2.3.4:51820",
-      "publicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
-      "allowedIPs": [
-        "10.13.13.0/24"
-      ],
-      "persistentKeepalive": "25s"
-    }
-  ]
+  "kubeConfigPath": "/etc/kubernetes/wg-cni.kubeconfig"
 }
 ```
 
-### Example: chained plugin with flannel
+Note that the `wg-cni.kubeconfig` file gets created automatically by
+wg-cni during installation.
+
+wg-cni should now be ready and running - you can check with:
+
+```
+kubectl -n kube-system get pods -l k8s-app=wg-cni
+```
+
+### Example: chained plugin configuration with flannel
 
 Edit the `kube-flannel-cfg` configmap and add `wg-cni` as a chained
 plugin. Deploy new flannel pods for the configuration to be written.
@@ -91,18 +85,7 @@ data:
         },
         {
           "type": "wg-cni",
-          "address": "10.13.13.210/24",
-          "privateKey": "AAev16ZVYhmCQliIYKXMje1zObRp6TmET0KiUx7MJXc=",
-          "peers": [
-            {
-              "endpoint": "1.2.3.4:51820",
-              "publicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
-              "allowedIPs": [
-                "10.13.13.0/24"
-              ],
-              "persistentKeepalive": "25s"
-            }
-          ]
+          "kubeConfigPath": "/etc/kubernetes/wg-cni.kubeconfig"
         }
       ]
     }
@@ -115,10 +98,69 @@ data:
     }
 ```
 
+## Usage
+
+To add a WireGuard connection to a pod, two things are required:
+
+1. a secret with the configuration and
+1. an annotation in the pod's metadata to signal wg-cni that it should
+   configuare a link for it and where the configuration can be found.
+
+Note: pods that are not annotated are skipped by wg-cni.
+
+Create a file `config.json` with the following structure:
+
+```
+{
+  "address": "10.13.13.210/24",
+  "privateKey": "AAev16ZVYhmCQliIYKXMje1zObRp6TmET0KiUx7MJXc=",
+  "peers": [
+    {
+      "endpoint": "1.2.3.4:51820",
+      "publicKey": "+gXCSfkib2xFMeebKXIYBVZxV/Vh2mbi1dJeHCCjQmg=",
+      "allowedIPs": [
+        "10.13.13.0/24"
+      ],
+      "persistentKeepalive": "25s"
+    }
+  ]
+}
+```
+
+Create a secret from the file:
+
+```
+kubectl create secret generic wgcni-demo --from-file ./config.json
+```
+
+Start a new pod with a corresponding `wgcni.schu.io/configsecret` annotation:
+
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test
+  annotations:
+    wgcni.schu.io/configsecret: "wgcni-demo"
+spec:
+  ...
+```
+
+The value `wgcni-demo` is the name of the secret in the pod's namespace.
+
+Once running, the pod should have a `wg<suffix>` interface that is
+configured according to your configuration.
+
+If an error occurs, you should find a message in the events:
+
+```
+kubectl get events
+```
+
 ## Roadmap / Todo
 
-* [x] Switch to https://github.com/mdlayher/wireguardctrl for netlink
-* [ ] Provide a container and manifest to install the wg-cni plugin binary
-  on all nodes in a cluster
+* [x] Switch to https://github.com/WireGuard/wgctrl-go for netlink
+* [x] Provide a container and manifest to install the wg-cni plugin binary
+  and required configuration on all nodes in a cluster
 * [ ] Allow dynamic configuration through Kubernetes resources
-* [ ] Allow wireguard-cni to be used in standalone and chained mode?
+* [ ] Consider allowing wg-cni to be used in standalone and chained mode
