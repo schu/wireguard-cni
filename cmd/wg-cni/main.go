@@ -33,6 +33,7 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/schu/wireguard-cni/pkg/k8sutil"
 	wgnetlink "github.com/schu/wireguard-cni/pkg/netlink"
@@ -63,14 +64,8 @@ type PluginConf struct {
 	PrevResult    *current.Result         `json:"-"`
 
 	// Add plugin-specifc flags here
-	Address    string `json:"address"`
-	PrivateKey string `json:"privateKey"`
-	Peers      []struct {
-		Endpoint            string   `json:"endpoint"`
-		PublicKey           string   `json:"publicKey"`
-		PersistentKeepalive string   `json:"persistentKeepalive"`
-		AllowedIPs          []string `json:"allowedIPs"`
-	} `json:"peers"`
+	KubeConfigPath   string `json: "kubeConfigPath"`
+	StaticConfigPath string `json: "staticConfigPath"`
 }
 
 // parseConfig parses the supplied configuration (and prevResult) from stdin.
@@ -100,17 +95,30 @@ func parseConfig(stdin []byte) (*PluginConf, error) {
 	// End previous result parsing
 
 	// Do any validation here
-	if len(conf.Peers) == 0 {
-		return nil, fmt.Errorf("no peer specified")
-	}
-	if conf.Address == "" {
-		return nil, fmt.Errorf("address must be specified")
-	}
-	if conf.PrivateKey == "" {
-		return nil, fmt.Errorf("privateKey must be specified")
+	if conf.KubeConfigPath == "" && conf.StaticConfigPath == "" {
+		return nil, fmt.Errorf("neither 'kubeConfigPath' nor 'staticConfigPath' given")
 	}
 
 	return &conf, nil
+}
+
+type kubernetesArgs struct {
+	types.CommonArgs
+
+	// Variable names must match CNI argument keys
+	K8S_POD_NAMESPACE types.UnmarshallableString
+	K8S_POD_NAME      types.UnmarshallableString
+}
+
+type wgCNIConfig struct {
+	Address    string `json:"address"`
+	PrivateKey string `json:"privateKey"`
+	Peers      []struct {
+		Endpoint            string   `json:"endpoint"`
+		PublicKey           string   `json:"publicKey"`
+		PersistentKeepalive string   `json:"persistentKeepalive"`
+		AllowedIPs          []string `json:"allowedIPs"`
+	} `json:"peers"`
 }
 
 // cmdAdd is called for ADD requests
@@ -124,21 +132,52 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("must be called as chained plugin")
 	}
 
-	clientset, err := k8sutil.NewClientset("/etc/kubernetes/wg-cni.kubeconfig")
-	if err != nil {
-		return fmt.Errorf("could not get k8s clientset: %v", err)
+	var wgConfig wgCNIConfig
+	if conf.KubeConfigPath != "" {
+		clientset, err := k8sutil.NewClientset(conf.KubeConfigPath)
+		if err != nil {
+			return fmt.Errorf("could not get k8s clientset: %v", err)
+		}
+
+		var k8sArgs kubernetesArgs
+		if err := types.LoadArgs(args.Args, &k8sArgs); err != nil {
+			return fmt.Errorf("could not load CNI args %q: %v", args.Args, err)
+		}
+
+		podNamespace := string(k8sArgs.K8S_POD_NAMESPACE)
+		podName := string(k8sArgs.K8S_POD_NAME)
+
+		podSpec, err := clientset.CoreV1().Pods(podNamespace).Get(podName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("could not get pod spec: %v", err)
+		}
+
+		if podSpec.ObjectMeta.Annotations == nil ||
+			podSpec.ObjectMeta.Annotations["wgcni.schu.io/configsecret"] == "" {
+			// This pod is not annoted to be configured
+			// with wg-cni - nothing to do
+			return types.PrintResult(conf.PrevResult, conf.CNIVersion)
+		}
+
+		configSecretName := podSpec.ObjectMeta.Annotations["wgcni.schu.io/configsecret"]
+
+		wgConfigJSON, err := clientset.CoreV1().Secrets(podNamespace).Get(configSecretName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("could not get secret '%q' with wg-cni config: %v", configSecretName, err)
+		}
+
+		if err := json.Unmarshal(wgConfigJSON.Data["config.json"], &wgConfig); err != nil {
+			return fmt.Errorf("could not unmarshal wg-cni config: %v", err)
+		}
 	}
 
-	// TODO
-	_ = clientset
-
-	privateKey, err := wgtypes.ParseKey(conf.PrivateKey)
+	privateKey, err := wgtypes.ParseKey(wgConfig.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("could not parse private key: %v", err)
 	}
 
 	var peers []wgtypes.PeerConfig
-	for _, peerConf := range conf.Peers {
+	for _, peerConf := range wgConfig.Peers {
 		var peer wgtypes.PeerConfig
 
 		peer.PublicKey, err = wgtypes.ParseKey(peerConf.PublicKey)
@@ -169,7 +208,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		peers = append(peers, peer)
 	}
 
-	wgConfig := wgtypes.Config{
+	wgctrlConfig := wgtypes.Config{
 		PrivateKey: &privateKey,
 		Peers:      peers,
 	}
@@ -191,9 +230,9 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("could not create wg network interface: %v", err)
 	}
 
-	sourceIP, sourceIPNet, err := net.ParseCIDR(conf.Address)
+	sourceIP, sourceIPNet, err := net.ParseCIDR(wgConfig.Address)
 	if err != nil {
-		return fmt.Errorf("could not parse cidr %q: %v", conf.Address, err)
+		return fmt.Errorf("could not parse cidr %q: %v", wgConfig.Address, err)
 	}
 
 	addr := &netlink.Addr{
@@ -209,7 +248,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	defer wgClient.Close()
 
-	if err := wgClient.ConfigureDevice(linkName, wgConfig); err != nil {
+	if err := wgClient.ConfigureDevice(linkName, wgctrlConfig); err != nil {
 		return fmt.Errorf("could not configure wireguard link: %v", err)
 	}
 

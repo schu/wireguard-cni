@@ -11,6 +11,6 @@ require (
 	golang.org/x/sys v0.0.0-20200413165638-669c56c373c4
 	golang.zx2c4.com/wireguard v0.0.20200320 // indirect
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20200324154536-ceff61240acf
-	k8s.io/apimachinery v0.17.5 // indirect
+	k8s.io/apimachinery v0.17.5
 	k8s.io/client-go v0.17.0
 )
