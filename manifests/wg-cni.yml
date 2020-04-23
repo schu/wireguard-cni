@@ -58,8 +58,7 @@ spec:
       serviceAccountName: wg-cni
       containers:
       - name: install
-        image: quay.io/schu/wireguard-cni:testing
-        # TODO: consider switching back to 'IfNotPresent' when wg-cni is "stable"
+        image: quay.io/schu/wireguard-cni:0.1.0
         imagePullPolicy: Always
         command: ["/install"]
         envFrom:
