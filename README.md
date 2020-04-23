@@ -42,6 +42,8 @@ kubectl -n kube-system get pods -l k8s-app=wg-cni
 
 ### Example: chained plugin configuration with flannel
 
+<details>
+
 Edit the `kube-flannel-cfg` configmap and add `wg-cni` as a chained
 plugin. Deploy new flannel pods for the configuration to be written.
 To do that, you can delete the currently running flannel pods with
@@ -96,6 +98,8 @@ data:
       }
     }
 ```
+
+</details>
 
 ## Usage
 
