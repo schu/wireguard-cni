@@ -22,8 +22,7 @@ kubectl apply -f manifests/wg-cni.yml
 wg-cni is set up as a chained CNI plugin. This means you have
 to configure wg-cni as an additional CNI plugin in your configuration.
 
-To do this, the following section has to be added to the CNI config of
-your cluster:
+To do this, add wg-cni to the list of `plugins`:
 
 ```
 {
