@@ -130,6 +130,8 @@ Create a file `config.json` with the following structure:
 }
 ```
 
+You can add presharedKey under peers if necessary.
+
 Create a secret from the file:
 
 ```

@@ -116,6 +116,7 @@ type wgCNIConfig struct {
 	Peers      []struct {
 		Endpoint            string   `json:"endpoint"`
 		PublicKey           string   `json:"publicKey"`
+		PresharedKey        string   `json:"presharedKey,omitempty"`
 		PersistentKeepalive string   `json:"persistentKeepalive"`
 		AllowedIPs          []string `json:"allowedIPs"`
 	} `json:"peers"`
@@ -183,6 +184,14 @@ func cmdAdd(args *skel.CmdArgs) error {
 		peer.PublicKey, err = wgtypes.ParseKey(peerConf.PublicKey)
 		if err != nil {
 			return fmt.Errorf("could not parse public key: %v", err)
+		}
+
+		if peerConf.PresharedKey != "" {
+			PresharedKey, err := wgtypes.ParseKey(peerConf.PresharedKey)
+			if err != nil {
+				return fmt.Errorf("could not parse preshared key: %v", err)
+			}
+			peer.PresharedKey = &PresharedKey
 		}
 
 		keepaliveInterval, err := time.ParseDuration(peerConf.PersistentKeepalive)
